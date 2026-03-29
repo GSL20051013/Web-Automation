@@ -58,6 +58,7 @@ class AIBrowserClient(abc.ABC):
         self.timeout = timeout
 
         self._playwright = None
+        self._browser = None
         self._context = None
         self._page = None
 
@@ -77,30 +78,23 @@ class AIBrowserClient(abc.ABC):
         os.makedirs(self.profile_dir, exist_ok=True)
 
         self._playwright = sync_playwright().start()
-        self._context = self._playwright.chromium.launch_persistent_context(
-            self.profile_dir,
-            channel="chrome",
+        self._browser = self._playwright.chromium.launch(
             headless=self.headless,
-            viewport={"width": 1280, "height": 900},
             args=[
-                # Prevent Chrome from opening the first-run wizard or the
-                # "Sign in to Chrome" interstitial that causes a Guest session
-                # to be loaded instead of the persisted user profile.
-                "--no-first-run",
-                "--no-default-browser-check",
-                # Disable Chrome's own account sync so it doesn't redirect to
-                # a sign-in page before the persisted session is restored.
-                "--disable-sync",
-                "--disable-features=ChromeWhatsNewUI",
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
             ],
         )
 
-        # Reuse the existing page if one is already open (persistent context
-        # may have restored previous session tabs).
-        if self._context.pages:
-            self._page = self._context.pages[0]
-        else:
-            self._page = self._context.new_page()
+        # Load a previously saved session (cookies + local storage) if one
+        # exists so that the user does not have to log in on every run.
+        storage_state_path = os.path.join(self.profile_dir, "storage_state.json")
+        context_kwargs = {"viewport": {"width": 1280, "height": 900}}
+        if os.path.isfile(storage_state_path):
+            context_kwargs["storage_state"] = storage_state_path
+
+        self._context = self._browser.new_context(**context_kwargs)
+        self._page = self._context.new_page()
 
         self._page.set_default_timeout(self.timeout)
         self._on_start()
@@ -111,11 +105,14 @@ class AIBrowserClient(abc.ABC):
         try:
             if self._context is not None:
                 self._context.close()
+            if self._browser is not None:
+                self._browser.close()
         finally:
             if self._playwright is not None:
                 self._playwright.stop()
             self._context = None
             self._page = None
+            self._browser = None
             self._playwright = None
 
     # ------------------------------------------------------------------
