@@ -3,6 +3,18 @@ Google AI Studio browser client.
 
 Automates https://aistudio.google.com/prompts/new_chat so that local servers
 and personal apps can obtain AI responses without an API key.
+
+Design philosophy
+-----------------
+* **Keyboard-first**: ``Ctrl+Enter`` (``Cmd+Enter`` on macOS) is used to
+  submit prompts.  Button clicks are only attempted as a secondary fallback.
+  Keyboard shortcuts are far more stable across UI changes.
+* **Minimal selectors**: only a small, prioritised list of selectors is kept
+  for each interaction point.  The most generic HTML attributes (``textarea``,
+  ``[contenteditable]``) are tried last so that page-structure changes in
+  AI Studio degrade gracefully rather than causing hard failures.
+* **JS fallbacks**: when CSS selectors fail, JavaScript DOM queries are used
+  to locate elements at runtime, providing an additional safety net.
 """
 
 from __future__ import annotations
@@ -10,70 +22,67 @@ from __future__ import annotations
 import os
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from .base import AIBrowserClient
 
 
 # ---------------------------------------------------------------------------
-# CSS / ARIA selectors for Google AI Studio
-#
-# AI Studio is an Angular SPA; its DOM structure changes over time.  Multiple
-# fallback strategies are used throughout so that the client degrades
-# gracefully rather than crashing on minor site updates.
+# Selectors – ordered from most specific to most general.
+# AI Studio is an Angular SPA whose component names change; keeping the list
+# short and finishing with broad HTML selectors keeps things working longer.
 # ---------------------------------------------------------------------------
 
-# Prompt input – the editable area where the user types their message.
+# Prompt input area.
 _INPUT_SELECTORS = [
-    "ms-prompt-input rich-textarea .ql-editor",  # Quill-based rich text area
+    "ms-prompt-input rich-textarea .ql-editor",
     "ms-prompt-input [contenteditable='true']",
     "ms-prompt-input textarea",
-    ".prompt-input [contenteditable='true']",
-    "[aria-label='Prompt input area']",
     "rich-textarea .ql-editor",
-    "[data-testid='prompt-input']",
+    "[contenteditable='true']",
 ]
 
-# Run / submit button.
-_RUN_SELECTORS = [
-    "run-button button:not([disabled])",
-    "button[aria-label='Run']",
-    "button[mattooltip='Run (Ctrl+Enter)']",
-    "button:has-text('Run')",
-]
-
-# Indicator that a response is still being generated.
-# AI Studio shows a stop button (or a spinner) while streaming.
+# Stop / loading indicator shown while the model is generating.
 _STOP_SELECTORS = [
-    "button[aria-label='Stop']",
     "button[aria-label='Stop generation']",
-    "button:has-text('Stop')",
+    "button[aria-label='Stop']",
     ".stop-button",
 ]
 
-# Selector for the *last* model response turn in the conversation.
+# Last model-response container from which the reply text is extracted.
 _RESPONSE_SELECTORS = [
     "ms-chat-turn[role='model']:last-of-type .chat-turn-content",
     "ms-chat-turn:last-of-type .model-response-text",
     ".model-response-text",
     "ms-text-chunk:last-of-type",
-    ".chat-turn-container:last-child .model-response-text",
 ]
 
-# Text that appears in the page title or a heading when AI Studio is ready.
-_READY_MARKER = "AI Studio"
+# JavaScript fallback: return the last non-empty text found in a model turn.
+_RESPONSE_JS = """
+() => {
+    const candidates = [
+        ...document.querySelectorAll('ms-chat-turn[role="model"] .chat-turn-content'),
+        ...document.querySelectorAll('.model-response-text'),
+        ...document.querySelectorAll('ms-text-chunk'),
+    ];
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        const t = (candidates[i].innerText || '').trim();
+        if (t) return t;
+    }
+    return '';
+}
+"""
 
-# Maximum time (ms) to wait for the response stream to complete.
+# Maximum time (ms) to wait for the response stream to finish.
 _RESPONSE_TIMEOUT_MS = 180_000  # 3 minutes
 
-# How long (ms) the response must be stable before we consider it complete.
+# How long (ms) the response must be unchanged to be considered complete.
 _STABILITY_DELAY_MS = 2_000
 
-# Milliseconds-to-seconds conversion factor.
 _MS = 1_000.0
 
-# Platform-aware modifier key: Command on macOS, Control everywhere else.
+# Platform-aware modifier key: Command on macOS, Control elsewhere.
 _MOD = "Meta" if sys.platform == "darwin" else "Control"
 
 
@@ -168,10 +177,7 @@ class AIStudio(AIBrowserClient):
     def _ensure_logged_in(self) -> None:
         """Wait for Google sign-in if the browser was redirected to the login page."""
         page = self._page
-        current_url = page.url
-
-        # Use urlparse so we check the actual hostname, not arbitrary substrings.
-        parsed = urlparse(current_url)
+        parsed = urlparse(page.url)
         netloc = parsed.netloc.lower()
         path = parsed.path.lower()
 
@@ -181,46 +187,47 @@ class AIStudio(AIBrowserClient):
             or "signin" in path
         )
 
-        # If we landed on a Google sign-in page, handle based on headless flag.
-        if on_signin_page:
-            if self.headless:
-                raise RuntimeError(
-                    "Not logged in to Google AI Studio.\n"
-                    "Run once with  headless=False  to open the browser, sign in\n"
-                    "with your Google account, and then close the client.\n"
-                    "Your session will be saved to:\n"
-                    f"  {self.profile_dir}\n"
-                    "After that you can use headless=True for all future runs."
-                )
-            print(
-                "\n[ai_browser] A Google sign-in page was detected.\n"
-                "Please log in to your Google account in the browser window that just opened.\n"
-                "The script will continue automatically once you are signed in...\n"
+        if not on_signin_page:
+            return
+
+        if self.headless:
+            raise RuntimeError(
+                "Not logged in to Google AI Studio.\n"
+                "Run once with  headless=False  to open the browser, sign in\n"
+                "with your Google account, and then close the client.\n"
+                "Your session will be saved to:\n"
+                f"  {self.profile_dir}\n"
+                "After that you can use headless=True for all future runs."
             )
-            # Wait up to 5 minutes for the user to complete sign-in.
-            page.wait_for_url(
-                "**/aistudio.google.com/**",
-                timeout=300_000,
-                wait_until="domcontentloaded",
-            )
-            # Persist the session so future runs can skip login.
-            storage_state_path = os.path.join(self.profile_dir, "storage_state.json")
-            self._context.storage_state(path=storage_state_path)
-            print("[ai_browser] Sign-in detected – session saved. You can use headless=True from now on.\n")
+
+        print(
+            "\n[ai_browser] Please log in to your Google account in the browser window.\n"
+            "The script will continue automatically once sign-in is complete...\n"
+        )
+        # Wait up to 5 minutes for the user to complete sign-in.
+        page.wait_for_url(
+            "**/aistudio.google.com/**",
+            timeout=300_000,
+            wait_until="domcontentloaded",
+        )
+        # Persist the session so future runs can skip login.
+        storage_state_path = os.path.join(self.profile_dir, "storage_state.json")
+        self._context.storage_state(path=storage_state_path)
+        print("[ai_browser] Sign-in complete – session saved. You can use headless=True from now on.\n")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _wait_for_page_ready(self) -> None:
-        """Block until AI Studio's prompt input is visible and interactive."""
+        """Block until the prompt input is visible and interactive."""
         page = self._page
-        # Ensure the title matches AI Studio (not an error page / redirect).
+        # Confirm we are on an AI Studio page (not an error or redirect).
         page.wait_for_function(
             "document.title.includes('AI Studio') || document.title.includes('Google AI')",
             timeout=self.timeout,
         )
-        # Wait for at least one of the known input selectors to be present.
+        # Wait for the input area to be present and visible.
         for selector in _INPUT_SELECTORS:
             try:
                 page.wait_for_selector(selector, state="visible", timeout=10_000)
@@ -228,62 +235,74 @@ class AIStudio(AIBrowserClient):
             except Exception:
                 continue
         raise RuntimeError(
-            "AI Studio prompt input not found.  The page may have changed its layout.\n"
-            "Try running with headless=False to inspect the page, or file a bug report."
+            "AI Studio prompt input not found.\n"
+            "Run with headless=False to inspect the page, or check for a UI update."
         )
 
-    def _type_prompt(self, prompt: str) -> None:
-        """Clear the input area and type *prompt*."""
+    def _find_input(self) -> Any:
+        """Return the first visible prompt-input element, or raise."""
         page = self._page
-        input_el = None
         for selector in _INPUT_SELECTORS:
             try:
                 el = page.wait_for_selector(selector, state="visible", timeout=5_000)
                 if el:
-                    input_el = el
-                    break
+                    return el
             except Exception:
                 continue
+        raise RuntimeError("Could not locate the prompt input area in AI Studio.")
 
-        if input_el is None:
-            raise RuntimeError("Could not locate the prompt input area in AI Studio.")
-
+    def _type_prompt(self, prompt: str) -> None:
+        """Focus the input area, clear it, and type *prompt*."""
+        input_el = self._find_input()
         input_el.click()
-        # Clear any existing text using a cross-platform JS approach, then
-        # also try the select-all keyboard shortcut as a fallback.
+
+        # Clear existing text: try JS first (works for contenteditable); fall
+        # back to the select-all + Delete keyboard shortcut only if JS fails.
         try:
             input_el.evaluate("el => { el.textContent = ''; }")
         except Exception:
             input_el.press(f"{_MOD}+a")
             input_el.press("Delete")
-        # Use fill() for plain textareas; type() for contenteditable.
+
+        # fill() works for <textarea>; type() works for contenteditable.
         try:
             input_el.fill(prompt)
         except Exception:
             input_el.type(prompt)
 
     def _submit_prompt(self) -> None:
-        """Click the Run button (or fall back to Ctrl+Enter)."""
+        """Submit the prompt.
+
+        ``Ctrl+Enter`` (``Cmd+Enter`` on macOS) is the primary method because
+        it is a stable keyboard shortcut that works regardless of button layout
+        changes.  A Run-button click is attempted first only if the button is
+        already visible, to avoid a slow timeout on every call.
+        """
         page = self._page
-        for selector in _RUN_SELECTORS:
+
+        # Quick, non-blocking check for a visible Run button.
+        for selector in [
+            "run-button button:not([disabled])",
+            "button[aria-label='Run']",
+            "button[mattooltip='Run (Ctrl+Enter)']",
+        ]:
             try:
-                btn = page.wait_for_selector(selector, state="visible", timeout=5_000)
-                if btn:
+                btn = page.query_selector(selector)
+                if btn and btn.is_visible():
                     btn.click()
                     return
             except Exception:
                 continue
 
-        # Fallback: send the keyboard shortcut that AI Studio accepts.
+        # Primary method: keyboard shortcut.
         page.keyboard.press(f"{_MOD}+Return")
 
     def _wait_for_response(self) -> str:
-        """Wait for the streaming response to finish and return the text."""
+        """Wait for the model to finish generating and return the response."""
         page = self._page
         deadline = time.monotonic() + self.response_timeout / _MS
 
-        # Phase 1: Wait for a stop/loading indicator to appear, confirming
-        #          that generation has started.  We give it 15 seconds.
+        # Phase 1 – wait for the stop indicator (generation started).
         generation_started = False
         for selector in _STOP_SELECTORS:
             try:
@@ -293,21 +312,19 @@ class AIStudio(AIBrowserClient):
             except Exception:
                 continue
 
-        # Phase 2: Wait for that indicator to disappear (generation complete).
+        # Phase 2 – wait for the stop indicator to disappear (generation done).
         if generation_started:
             for selector in _STOP_SELECTORS:
                 try:
-                    page.wait_for_selector(selector, state="hidden", timeout=self.response_timeout)
+                    page.wait_for_selector(
+                        selector, state="hidden", timeout=self.response_timeout
+                    )
                     break
                 except Exception:
                     continue
-        else:
-            # The indicator may have appeared and disappeared very quickly;
-            # fall through to the stability-based approach below.
-            pass
 
-        # Phase 3: Wait for the response text to stabilise.
-        #          Poll until the text has not changed for _STABILITY_DELAY_MS.
+        # Phase 3 – poll until the response text has been stable for
+        #            _STABILITY_DELAY_MS ms (handles streaming responses).
         last_text: str = ""
         stable_since: float = time.monotonic()
 
@@ -317,11 +334,9 @@ class AIStudio(AIBrowserClient):
                 last_text = text
                 stable_since = time.monotonic()
             elif text and (time.monotonic() - stable_since) * _MS >= _STABILITY_DELAY_MS:
-                # Text has been stable long enough – we are done.
                 return text
             time.sleep(0.3)
 
-        # Timeout – return whatever we have.
         if last_text:
             return last_text
         raise RuntimeError(
@@ -329,8 +344,10 @@ class AIStudio(AIBrowserClient):
         )
 
     def _extract_last_response(self) -> str:
-        """Return the text of the latest model response turn, or ''."""
+        """Return the text of the latest model response, or an empty string."""
         page = self._page
+
+        # Try CSS selectors first (fast path).
         for selector in _RESPONSE_SELECTORS:
             try:
                 elements = page.query_selector_all(selector)
@@ -340,4 +357,13 @@ class AIStudio(AIBrowserClient):
                         return text
             except Exception:
                 continue
+
+        # JS fallback (resilient to component renames).
+        try:
+            text = page.evaluate(_RESPONSE_JS)
+            if text:
+                return text
+        except Exception:
+            pass
+
         return ""
