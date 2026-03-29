@@ -82,6 +82,17 @@ class AIBrowserClient(abc.ABC):
             channel="chrome",
             headless=self.headless,
             viewport={"width": 1280, "height": 900},
+            args=[
+                # Prevent Chrome from opening the first-run wizard or the
+                # "Sign in to Chrome" interstitial that causes a Guest session
+                # to be loaded instead of the persisted user profile.
+                "--no-first-run",
+                "--no-default-browser-check",
+                # Disable Chrome's own account sync so it doesn't redirect to
+                # a sign-in page before the persisted session is restored.
+                "--disable-sync",
+                "--disable-features=ChromeWhatsNewUI",
+            ],
         )
 
         # Reuse the existing page if one is already open (persistent context
