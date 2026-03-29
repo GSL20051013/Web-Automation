@@ -64,17 +64,175 @@ with AIStudio() as ai:                         # headless=True by default
 | `timeout` | `int` | `60000` | Navigation / element-wait timeout in milliseconds. |
 | `response_timeout` | `int` | `180000` | Maximum time to wait for a response in milliseconds. |
 
-#### Methods
+`AIStudio` works as a **context manager** (`with AIStudio() as ai: …`) or
+with an explicit `start()` / `stop()` lifecycle.
+
+---
+
+### Core methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `start()` | `self` | Launch the browser. Chainable. |
+| `stop()` | `None` | Close the browser and release all resources. |
+| `chat(prompt)` | `str` | Send a prompt and return the AI's response text. |
+| `new_chat()` | `None` | Navigate to a fresh empty chat session. |
+| `screenshot(path)` | `None` | Save a PNG screenshot to *path* (useful for debugging). |
+| `get_token_count()` | `int \| None` | Return the current token count shown in the UI, or `None`. |
+| `upload_file(path)` | `None` | Attach a local file (image, video, audio, document) to the prompt. |
+
+---
+
+### System instructions
+
+```python
+ai.set_system_instructions("You are a concise assistant. Reply in bullet points.")
+```
 
 | Method | Description |
 |---|---|
-| `start()` | Launch the browser. Returns `self`. |
-| `stop()` | Close the browser and release resources. |
-| `chat(prompt: str) → str` | Send a prompt and return the AI's response. |
-| `new_chat()` | Navigate to a fresh empty chat session. |
-| `screenshot(path: str)` | Save a PNG screenshot (useful for debugging). |
+| `set_system_instructions(text)` | Set (or clear) the system instructions for the session. Pass `""` to clear. |
 
-`AIStudio` also works as a **context manager** (`with AIStudio() as ai: …`).
+---
+
+### Model settings
+
+```python
+ai.set_temperature(0.4)
+ai.set_thinking_level("High")
+```
+
+| Method | Parameters | Description |
+|---|---|---|
+| `set_temperature(value)` | `value: float` in `[0.0, 2.0]` | Lower = more deterministic; higher = more creative. |
+| `set_thinking_level(level)` | `level: str` — one of `"None"`, `"Low"`, `"Medium"`, `"High"` | Internal reasoning budget (supported models only). |
+
+---
+
+### Grounding & search tools
+
+```python
+ai.set_grounding(True)          # Google Search
+ai.set_maps_grounding(True)     # Google Maps
+ai.set_url_context(True)        # fetch URLs mentioned in the prompt
+```
+
+| Method | Description |
+|---|---|
+| `set_grounding(enabled)` | Enable / disable **Grounding with Google Search**. |
+| `set_maps_grounding(enabled)` | Enable / disable **Grounding with Google Maps**. |
+| `set_url_context(enabled)` | Enable / disable the **URL Context** tool (model reads URLs in the prompt). |
+
+---
+
+### Tool use (function calling & code execution)
+
+#### Code execution
+
+```python
+ai.set_code_execution(True)
+response = ai.chat("Calculate the first 20 Fibonacci numbers and return them as a list.")
+```
+
+| Method | Description |
+|---|---|
+| `set_code_execution(enabled)` | Enable / disable the **Code Execution** tool (model can run Python code). |
+
+#### Function calling
+
+Enable the toggle without specifying declarations:
+
+```python
+ai.set_function_calling(True)
+```
+
+Or define your callable functions as a JSON array of
+[`FunctionDeclaration`](https://ai.google.dev/api/generate-content#v1beta.FunctionDeclaration)
+objects (this also enables function calling automatically):
+
+```python
+declarations = [
+    {
+        "name": "get_weather",
+        "description": "Return the current weather for a city.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "Name of the city."}
+            },
+            "required": ["city"]
+        }
+    }
+]
+
+import json
+ai.set_function_declarations(json.dumps(declarations))
+response = ai.chat("What is the weather in Tokyo right now?")
+print(response)  # Model will describe a call to get_weather(city="Tokyo")
+```
+
+| Method | Description |
+|---|---|
+| `set_function_calling(enabled)` | Enable / disable the **Function Calling** toggle. |
+| `set_function_declarations(json_text)` | Set function declarations (JSON array). Enables function calling automatically. Raises `ValueError` for invalid JSON. |
+
+#### Structured output
+
+Enforce a specific JSON response shape:
+
+```python
+schema = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]},
+        "score": {"type": "number"}
+    },
+    "required": ["summary", "sentiment", "score"]
+}
+
+import json
+ai.set_structured_output_schema(json.dumps(schema))
+response = ai.chat("Review: 'This product is amazing and works perfectly!'")
+print(response)  # JSON conforming to the schema above
+```
+
+| Method | Description |
+|---|---|
+| `set_structured_output(enabled)` | Enable / disable the **Structured Outputs** toggle. |
+| `set_structured_output_schema(json_text)` | Set the JSON schema for structured output. Enables structured output automatically. Raises `ValueError` for invalid JSON. |
+
+---
+
+## Example: full tool-use session
+
+```python
+import json
+from ai_browser import AIStudio
+
+tools = [
+    {
+        "name": "search_products",
+        "description": "Search a product catalogue and return matching items.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "default": 5}
+            },
+            "required": ["query"]
+        }
+    }
+]
+
+with AIStudio(headless=True) as ai:
+    ai.set_system_instructions("You are a helpful shopping assistant.")
+    ai.set_temperature(0.3)
+    ai.set_function_declarations(json.dumps(tools))
+
+    response = ai.chat("Find me a pair of red running shoes under $100.")
+    print(response)
+```
 
 ---
 
@@ -102,6 +260,31 @@ if __name__ == "__main__":
 
 ---
 
+## command-line interface (`example.py`)
+
+```
+python example.py [OPTIONS]
+
+Options:
+  --login                     Open a visible browser for first-time login.
+  --prompt TEXT               Prompt to send (default: "Explain what a large language model is …").
+  --system TEXT               System instructions.
+  --temperature FLOAT         Model temperature [0.0, 2.0].
+  --thinking LEVEL            Thinking level: None | Low | Medium | High.
+  --grounding                 Enable Grounding with Google Search.
+  --maps-grounding            Enable Grounding with Google Maps.
+  --url-context               Enable URL Context tool.
+  --code-execution            Enable Code Execution tool.
+  --function-calling          Enable Function Calling tool.
+  --function-declarations JSON  JSON array of FunctionDeclaration objects.
+  --structured-output         Enable Structured Outputs.
+  --output-schema JSON        JSON schema for structured output.
+  --file PATH                 File to attach (image, video, audio, document).
+  --screenshot PATH           Save a debug screenshot after the response.
+```
+
+---
+
 ## Debugging tips
 
 * Run with `headless=False` to watch the browser and identify issues.
@@ -119,3 +302,4 @@ if __name__ == "__main__":
 4. It polls the page until the model finishes generating (the stop indicator
    disappears and the response text stabilises for 2 seconds).
 5. The final response text is returned as a plain Python string.
+

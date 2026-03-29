@@ -473,6 +473,437 @@ class AIStudio(AIBrowserClient):
         fc_info.value.set_files(os.path.abspath(path))
 
     # ------------------------------------------------------------------
+    # Tool use
+    # ------------------------------------------------------------------
+
+    def set_code_execution(self, enabled: bool) -> None:
+        """Enable or disable the Code Execution tool.
+
+        When enabled, the model can write and run Python code during
+        inference to solve problems that benefit from computation.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to turn code execution on, ``False`` to turn it off.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        self._ensure_tools_expanded()
+        self._toggle_tool_switch(
+            enabled=enabled,
+            selectors=[
+                ".code-execution-toggle button[role='switch']",
+                "mat-slide-toggle.code-execution-toggle button",
+                "button[aria-label='Code execution']",
+            ],
+            error_msg=(
+                "Code Execution toggle not found. "
+                "Make sure the Run Settings panel is visible."
+            ),
+        )
+
+    def set_function_calling(self, enabled: bool) -> None:
+        """Enable or disable the Function Calling tool.
+
+        When enabled, the model can invoke the function declarations you
+        have defined instead of (or in addition to) generating text.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to turn function calling on, ``False`` to turn it off.
+
+        See Also
+        --------
+        set_function_declarations : Define the callable functions.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        self._ensure_tools_expanded()
+        self._toggle_tool_switch(
+            enabled=enabled,
+            selectors=[
+                ".function-calling-toggle button[role='switch']",
+                "mat-slide-toggle.function-calling-toggle button",
+                "button[aria-label='Function calling']",
+            ],
+            error_msg=(
+                "Function Calling toggle not found. "
+                "Make sure the Run Settings panel is visible."
+            ),
+        )
+
+    def set_function_declarations(self, json_text: str) -> None:
+        """Define the functions the model may call (function calling / tool use).
+
+        Enables the Function Calling toggle (if not already on), opens the
+        function-declarations editor, replaces the content with *json_text*,
+        and saves.
+
+        The expected format is a JSON array of ``FunctionDeclaration`` objects
+        as described in the `Gemini API reference
+        <https://ai.google.dev/api/generate-content#v1beta.FunctionDeclaration>`_::
+
+            [
+              {
+                "name": "get_weather",
+                "description": "Return current weather for a city.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "city": {"type": "string", "description": "City name"}
+                  },
+                  "required": ["city"]
+                }
+              }
+            ]
+
+        Parameters
+        ----------
+        json_text:
+            A JSON string containing an array of FunctionDeclaration objects.
+
+        Raises
+        ------
+        ValueError
+            If *json_text* is not valid JSON.
+        RuntimeError
+            If the editor panel cannot be found.
+        """
+        import json as _json
+
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+
+        try:
+            _json.loads(json_text)
+        except _json.JSONDecodeError as exc:
+            raise ValueError(f"json_text is not valid JSON: {exc}") from exc
+
+        # Ensure function calling is enabled first.
+        self.set_function_calling(True)
+
+        page = self._page
+
+        # Click the "Edit" button next to the Function Calling toggle.
+        edit_btn = None
+        for selector in [
+            "button[aria-label='Edit function declarations']",
+            ".edit-function-declarations-button",
+        ]:
+            try:
+                edit_btn = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if edit_btn:
+                    break
+            except Exception:
+                continue
+
+        if edit_btn is None:
+            raise RuntimeError(
+                "Edit function declarations button not found. "
+                "Make sure Function Calling is enabled and the Run Settings panel is visible."
+            )
+        edit_btn.click()
+
+        # Wait for the editor panel / dialog to open and find its textarea.
+        editor = self._wait_for_json_editor()
+        self._fill_json_editor(editor, json_text)
+
+    def set_structured_output(self, enabled: bool) -> None:
+        """Enable or disable Structured Outputs.
+
+        When enabled, the model returns a response conforming to the JSON
+        schema you specify with :meth:`set_structured_output_schema`.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to turn structured output on, ``False`` to turn it off.
+
+        See Also
+        --------
+        set_structured_output_schema : Provide the JSON schema.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        self._ensure_tools_expanded()
+        self._toggle_tool_switch(
+            enabled=enabled,
+            selectors=[
+                ".structured-output-toggle button[role='switch']",
+                "mat-slide-toggle.structured-output-toggle button",
+                "button[aria-label='Structured outputs']",
+            ],
+            error_msg=(
+                "Structured Outputs toggle not found. "
+                "Make sure the Run Settings panel is visible."
+            ),
+        )
+
+    def set_structured_output_schema(self, json_text: str) -> None:
+        """Provide the JSON schema for structured output.
+
+        Enables the Structured Outputs toggle (if not already on), opens
+        the schema editor, replaces the content with *json_text*, and saves.
+
+        The expected format is a JSON Schema object, e.g.::
+
+            {
+              "type": "object",
+              "properties": {
+                "answer": {"type": "string"},
+                "confidence": {"type": "number"}
+              },
+              "required": ["answer"]
+            }
+
+        Parameters
+        ----------
+        json_text:
+            A JSON string containing the response schema.
+
+        Raises
+        ------
+        ValueError
+            If *json_text* is not valid JSON.
+        RuntimeError
+            If the editor panel cannot be found.
+        """
+        import json as _json
+
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+
+        try:
+            _json.loads(json_text)
+        except _json.JSONDecodeError as exc:
+            raise ValueError(f"json_text is not valid JSON: {exc}") from exc
+
+        # Ensure structured output is enabled first.
+        self.set_structured_output(True)
+
+        page = self._page
+
+        # Click the "Edit JSON schema" button.
+        edit_btn = None
+        for selector in [
+            "button[aria-label='Edit JSON schema']",
+            "button[data-test-id='editJsonSchemaButton']",
+            ".edit-schema-button",
+        ]:
+            try:
+                edit_btn = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if edit_btn:
+                    break
+            except Exception:
+                continue
+
+        if edit_btn is None:
+            raise RuntimeError(
+                "Edit JSON schema button not found. "
+                "Make sure Structured Outputs is enabled and the Run Settings panel is visible."
+            )
+        edit_btn.click()
+
+        editor = self._wait_for_json_editor()
+        self._fill_json_editor(editor, json_text)
+
+    def set_url_context(self, enabled: bool) -> None:
+        """Enable or disable the URL Context tool.
+
+        When enabled, the model can fetch and read the content of URLs
+        that appear in the prompt.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to turn URL context on, ``False`` to turn it off.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        self._ensure_tools_expanded()
+        self._toggle_tool_switch(
+            enabled=enabled,
+            selectors=[
+                "button[aria-label='Browse the url context']",
+                ".url-context-toggle button[role='switch']",
+                "mat-slide-toggle.url-context-toggle button",
+            ],
+            error_msg=(
+                "URL Context toggle not found. "
+                "Make sure the Run Settings panel is visible."
+            ),
+        )
+
+    def set_maps_grounding(self, enabled: bool) -> None:
+        """Enable or disable Grounding with Google Maps.
+
+        When enabled, the model can reference real-time map data (e.g.
+        business details, directions) via Google Maps.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to turn Maps grounding on, ``False`` to turn it off.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        self._ensure_tools_expanded()
+        self._toggle_tool_switch(
+            enabled=enabled,
+            selectors=[
+                ".google-maps-toggle button[role='switch']",
+                "mat-slide-toggle.google-maps-toggle button",
+                "button[aria-label='Grounding with Google Maps']",
+            ],
+            error_msg=(
+                "Grounding with Google Maps toggle not found. "
+                "Make sure the Run Settings panel is visible."
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Tool-use helpers (private)
+    # ------------------------------------------------------------------
+
+    def _ensure_tools_expanded(self) -> None:
+        """Expand the Tools section in the Run Settings panel if it is collapsed.
+
+        The Tools section has a toggle button whose icon changes between
+        ``expand_more`` (collapsed) and ``expand_less`` (expanded).  We click
+        the button only when the section is not yet expanded.
+        """
+        page = self._page
+        for selector in [
+            "button[aria-label='Expand or collapse tools']",
+            ".expand-icon[aria-label='Expand or collapse tools']",
+        ]:
+            try:
+                btn = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if btn:
+                    # The section is expanded when the icon text is "expand_less".
+                    icon_text = btn.inner_text().strip()
+                    if "expand_more" in icon_text:
+                        btn.click()
+                        time.sleep(0.3)
+                    return
+            except Exception:
+                continue
+
+    def _toggle_tool_switch(
+        self,
+        enabled: bool,
+        selectors: list,
+        error_msg: str,
+    ) -> None:
+        """Find a toggle switch by *selectors* and set it to *enabled*.
+
+        Parameters
+        ----------
+        enabled:
+            Desired state of the toggle.
+        selectors:
+            Ordered list of CSS selectors to try.
+        error_msg:
+            Message for the ``RuntimeError`` raised when the toggle cannot
+            be located.
+        """
+        page = self._page
+        toggle = None
+        for selector in selectors:
+            try:
+                toggle = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if toggle:
+                    break
+            except Exception:
+                continue
+
+        if toggle is None:
+            raise RuntimeError(error_msg)
+
+        is_checked = toggle.get_attribute("aria-checked") == "true"
+        if is_checked != enabled:
+            toggle.click()
+
+    def _wait_for_json_editor(self) -> Any:
+        """Wait for a JSON editor panel/dialog to open and return its textarea.
+
+        Tries a prioritised list of selectors that are known to be used by
+        AI Studio's function-declaration and JSON-schema editors.
+
+        Returns
+        -------
+        Playwright element handle for the editor textarea / contenteditable.
+
+        Raises
+        ------
+        RuntimeError
+            If no editor is found within the timeout.
+        """
+        page = self._page
+        for selector in [
+            "ms-sliding-right-panel textarea",
+            "ms-sliding-right-panel [contenteditable='true']",
+            "ms-sliding-right-panel .ql-editor",
+            ".function-declarations-editor textarea",
+            ".json-editor textarea",
+            "mat-dialog-container textarea",
+            "mat-dialog-container [contenteditable='true']",
+            "mat-dialog-container .ql-editor",
+        ]:
+            try:
+                el = page.wait_for_selector(selector, state="visible", timeout=8_000)
+                if el:
+                    return el
+            except Exception:
+                continue
+
+        raise RuntimeError(
+            "JSON editor panel not found. "
+            "Run with headless=False to inspect the page."
+        )
+
+    def _fill_json_editor(self, editor: Any, json_text: str) -> None:
+        """Clear *editor* and fill it with *json_text*, then save/close.
+
+        Parameters
+        ----------
+        editor:
+            Playwright element handle for the editor textarea / contenteditable.
+        json_text:
+            The JSON text to insert.
+        """
+        page = self._page
+        editor.click()
+        tag = editor.evaluate("el => el.tagName.toLowerCase()")
+        if tag == "textarea":
+            editor.fill(json_text)
+        else:
+            editor.press(f"{_MOD}+a")
+            editor.press("Delete")
+            if json_text:
+                editor.type(json_text, delay=2)
+
+        # Try to confirm / save via a Save or Apply button; fall back to Escape.
+        for selector in [
+            "button[aria-label='Save']",
+            "button:has-text('Save')",
+            "button:has-text('Apply')",
+            "button:has-text('Done')",
+        ]:
+            try:
+                btn = page.query_selector(selector)
+                if btn and btn.is_visible():
+                    btn.click()
+                    return
+            except Exception:
+                continue
+
+        # No explicit save button – close the panel with Escape.
+        page.keyboard.press("Escape")
+
+    # ------------------------------------------------------------------
     # Login check
     # ------------------------------------------------------------------
 
