@@ -77,10 +77,9 @@ class AIBrowserClient(abc.ABC):
         os.makedirs(self.profile_dir, exist_ok=True)
 
         self._playwright = sync_playwright().start()
-        self._context = self._playwright.chromium.launch_persistent_context(
+        self._context = self._playwright.firefox.launch_persistent_context(
             self.profile_dir,
             headless=self.headless,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
             viewport={"width": 1280, "height": 900},
         )
 

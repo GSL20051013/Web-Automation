@@ -5,7 +5,7 @@ Quick-start
 -----------
 1. Install dependencies:
         pip install -r requirements.txt
-        playwright install chromium
+        playwright install firefox
 
 2. First run – log in to Google AI Studio (browser window will open):
         python example.py --login
