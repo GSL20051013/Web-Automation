@@ -5,7 +5,9 @@ Quick-start
 -----------
 1. Install dependencies:
         pip install -r requirements.txt
-        playwright install firefox
+
+   Google Chrome must be installed on your system (https://www.google.com/chrome/).
+   No extra `playwright install` step is needed – Playwright uses the system Chrome directly.
 
 2. First run – log in to Google AI Studio (browser window will open):
         python example.py --login

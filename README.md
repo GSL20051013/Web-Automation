@@ -1,7 +1,7 @@
 # Web-Automation — ai_browser
 
 A Python package that lets **local servers and personal apps** use AI without
-any API key.  It drives a real browser (Firefox via
+any API key.  It drives a real browser (Google Chrome via
 [Playwright](https://playwright.dev/python/)) to automate AI websites, so you
 get full model access through your regular Google account at zero cost.
 
@@ -19,8 +19,11 @@ get full model access through your regular Google account at zero cost.
 
 ```bash
 pip install -r requirements.txt
-playwright install firefox
 ```
+
+Google Chrome must be installed on your system.  Download it from
+<https://www.google.com/chrome/> if needed.  No extra `playwright install`
+step is required — Playwright uses the system Chrome directly.
 
 ---
 
@@ -109,7 +112,7 @@ if __name__ == "__main__":
 
 ## How it works
 
-1. A Firefox browser is launched with a **persistent user-data directory**
+1. A Google Chrome browser is launched with a **persistent user-data directory**
    so that your Google login is kept between runs.
 2. The script navigates to `https://aistudio.google.com/prompts/new_chat`.
 3. It locates the prompt input area, types your text, and clicks **Run**.
