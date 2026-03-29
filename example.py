@@ -96,7 +96,7 @@ def main() -> None:
     headless = not args.login
 
     print(f"[example] Starting AI Studio client (headless={headless}) …")
-    with AIStudio(headless=headless) as ai:
+    with AIStudio(headless=False) as ai:
 
         # Optional: set system instructions.
         if args.system:
