@@ -20,6 +20,7 @@ Design philosophy
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from typing import Any, Optional
@@ -34,8 +35,12 @@ from .base import AIBrowserClient
 # short and finishing with broad HTML selectors keeps things working longer.
 # ---------------------------------------------------------------------------
 
-# Prompt input area.
+# Prompt input area (textarea inside ms-prompt-box).
 _INPUT_SELECTORS = [
+    "ms-prompt-box textarea[aria-label='Enter a prompt']",
+    "textarea[aria-label='Enter a prompt']",
+    "ms-prompt-box .cdk-textarea-autosize",
+    "ms-prompt-box textarea",
     "ms-prompt-input rich-textarea .ql-editor",
     "ms-prompt-input [contenteditable='true']",
     "ms-prompt-input textarea",
@@ -48,6 +53,7 @@ _STOP_SELECTORS = [
     "button[aria-label='Stop generation']",
     "button[aria-label='Stop']",
     ".stop-button",
+    "ms-run-button button[aria-label='Stop']",
 ]
 
 # Last model-response container from which the reply text is extracted.
@@ -56,6 +62,7 @@ _RESPONSE_SELECTORS = [
     "ms-chat-turn:last-of-type .model-response-text",
     ".model-response-text",
     "ms-text-chunk:last-of-type",
+    "ms-chat-turn[role='model']:last-of-type",
 ]
 
 # JavaScript fallback: return the last non-empty text found in a model turn.
@@ -65,6 +72,7 @@ _RESPONSE_JS = """
         ...document.querySelectorAll('ms-chat-turn[role="model"] .chat-turn-content'),
         ...document.querySelectorAll('.model-response-text'),
         ...document.querySelectorAll('ms-text-chunk'),
+        ...document.querySelectorAll('ms-chat-turn[role="model"]'),
     ];
     for (let i = candidates.length - 1; i >= 0; i--) {
         const t = (candidates[i].innerText || '').trim();
@@ -84,6 +92,9 @@ _MS = 1_000.0
 
 # Platform-aware modifier key: Command on macOS, Control elsewhere.
 _MOD = "Meta" if sys.platform == "darwin" else "Control"
+
+# Thinking level values accepted by set_thinking_level().
+THINKING_LEVELS = ("None", "Low", "Medium", "High")
 
 
 class AIStudio(AIBrowserClient):
@@ -169,6 +180,297 @@ class AIStudio(AIBrowserClient):
         if self._page is None:
             raise RuntimeError("Client is not started.")
         self._page.screenshot(path=path, full_page=False)
+
+    def set_system_instructions(self, text: str) -> None:
+        """Set the system instructions for the current chat session.
+
+        Opens the System Instructions side-panel, clears any existing text,
+        and types *text*.  Pass an empty string to clear the instructions.
+
+        Parameters
+        ----------
+        text:
+            The system instructions to apply (e.g. "You are a helpful pirate.").
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        page = self._page
+
+        # Open the system-instructions side panel.
+        for selector in [
+            "button[data-test-system-instructions-card]",
+            "button[aria-label='System instructions']",
+            ".system-instructions-card",
+        ]:
+            try:
+                btn = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if btn:
+                    btn.click()
+                    break
+            except Exception:
+                continue
+        else:
+            raise RuntimeError(
+                "Could not find the System Instructions button. "
+                "Run with headless=False to inspect the page."
+            )
+
+        # Wait for the panel to open and find the text input inside it.
+        input_el = None
+        for selector in [
+            "ms-system-instructions-panel ms-sliding-right-panel textarea",
+            "ms-system-instructions-panel textarea",
+            "ms-sliding-right-panel textarea",
+            "ms-sliding-right-panel [contenteditable='true']",
+            "ms-sliding-right-panel .ql-editor",
+        ]:
+            try:
+                input_el = page.wait_for_selector(selector, state="visible", timeout=8_000)
+                if input_el:
+                    break
+            except Exception:
+                continue
+
+        if input_el is None:
+            raise RuntimeError(
+                "System instructions input area not found after opening the panel."
+            )
+
+        input_el.click()
+        # For a regular <textarea>, fill() clears and sets text atomically.
+        # For contenteditable elements, fill() is not supported, so we check
+        # the element tag and choose the appropriate strategy.
+        tag = input_el.evaluate("el => el.tagName.toLowerCase()")
+        if tag == "textarea":
+            input_el.fill(text)
+        else:
+            # Contenteditable: clear via select-all + delete, then type.
+            input_el.press(f"{_MOD}+a")
+            input_el.press("Delete")
+            if text:
+                input_el.type(text, delay=10)
+
+    def set_temperature(self, value: float) -> None:
+        """Set the model temperature (creativity / randomness).
+
+        Parameters
+        ----------
+        value:
+            A float in the range ``[0.0, 2.0]``.  Lower values make the
+            model more deterministic; higher values make it more creative.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        if not 0.0 <= value <= 2.0:
+            raise ValueError(f"Temperature must be between 0.0 and 2.0, got {value!r}.")
+
+        page = self._page
+
+        # Try to set the temperature slider via JavaScript (most reliable).
+        set_js = f"""
+        () => {{
+            const containers = [
+                document.querySelector('[data-test-id="temperatureSliderContainer"]'),
+                ...document.querySelectorAll('ms-slider'),
+            ];
+            for (const c of containers) {{
+                if (!c) continue;
+                const input = c.querySelector('input[type="range"]');
+                if (input) {{
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    nativeInputValueSetter.call(input, {value});
+                    input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    return true;
+                }}
+            }}
+            return false;
+        }}
+        """
+        result = page.evaluate(set_js)
+        if not result:
+            raise RuntimeError(
+                "Could not locate the Temperature slider. "
+                "Make sure the Run Settings panel is visible."
+            )
+
+    def set_thinking_level(self, level: str) -> None:
+        """Set the model's thinking level.
+
+        Parameters
+        ----------
+        level:
+            One of ``"None"``, ``"Low"``, ``"Medium"``, or ``"High"``.
+            Controls how much internal reasoning the model applies before
+            generating its response (only available for supported models).
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        # Normalise: accept "NONE", "none", "None", etc.
+        level = level.title()
+        if level not in THINKING_LEVELS:
+            raise ValueError(
+                f"level must be one of {THINKING_LEVELS}, got {level!r}."
+            )
+
+        page = self._page
+        # level is now one of the fixed THINKING_LEVELS strings – safe to embed.
+        level_lower = level.lower()
+
+        # Click the Thinking Level combobox to open the dropdown.
+        select_el = None
+        for selector in [
+            "mat-select[aria-label='Thinking Level']",
+            "mat-select[aria-label='Thinking level']",
+        ]:
+            try:
+                select_el = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if select_el:
+                    break
+            except Exception:
+                continue
+
+        if select_el is None:
+            raise RuntimeError(
+                "Thinking Level selector not found. "
+                "This setting may not be available for the current model."
+            )
+
+        select_el.click()
+
+        # Wait for the dropdown panel and click the desired option.
+        try:
+            option = page.wait_for_selector(
+                f"mat-option:has-text('{level}')",
+                state="visible",
+                timeout=5_000,
+            )
+            if option:
+                option.click()
+                return
+        except Exception:
+            pass
+
+        # JS fallback: find the option by its text content.
+        page.evaluate(
+            """
+            (levelLower) => {
+                const options = document.querySelectorAll('mat-option');
+                for (const o of options) {
+                    if ((o.textContent || '').trim().toLowerCase() === levelLower) {
+                        o.click();
+                        return;
+                    }
+                }
+            }
+            """,
+            level_lower,
+        )
+
+    def set_grounding(self, enabled: bool) -> None:
+        """Enable or disable Grounding with Google Search.
+
+        When enabled, the model can cite real-time web search results.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to turn grounding on, ``False`` to turn it off.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        page = self._page
+
+        # Find the grounding toggle switch.
+        toggle = None
+        for selector in [
+            ".search-as-a-tool-toggle button[role='switch']",
+            "mat-slide-toggle.search-as-a-tool-toggle button",
+        ]:
+            try:
+                toggle = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if toggle:
+                    break
+            except Exception:
+                continue
+
+        if toggle is None:
+            raise RuntimeError(
+                "Grounding with Google Search toggle not found. "
+                "Make sure the Run Settings panel is visible."
+            )
+
+        # Read current state and click only if it needs to change.
+        is_checked = toggle.get_attribute("aria-checked") == "true"
+        if is_checked != enabled:
+            toggle.click()
+
+    def get_token_count(self) -> Optional[int]:
+        """Return the current token count shown in the UI, or ``None``.
+
+        AI Studio displays a running token count while you compose a prompt.
+        This method reads that value and returns it as an integer.
+
+        Returns
+        -------
+        int or None
+            The token count, or ``None`` if the counter is not visible /
+            cannot be parsed.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        page = self._page
+
+        try:
+            el = page.query_selector("ms-token-count")
+            if el is None:
+                return None
+            raw = el.inner_text().strip()
+            # Extract the first sequence of digits (e.g. "1,234 tokens" → 1234).
+            parts = raw.split()
+            digits = re.sub(r"[^\d]", "", parts[0]) if parts else ""
+            return int(digits) if digits else None
+        except Exception:
+            return None
+
+    def upload_file(self, path: str) -> None:
+        """Attach a local file (image, video, audio, or document) to the prompt.
+
+        Parameters
+        ----------
+        path:
+            Absolute or relative path to the file to upload.
+        """
+        if self._page is None:
+            raise RuntimeError("Client is not started.")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"File not found: {path!r}")
+
+        page = self._page
+
+        # Click the media-attachment button to open a file chooser.
+        media_btn = None
+        for selector in [
+            "button[aria-label='Insert images, videos, audio, or files']",
+            "ms-add-media-button button",
+            "button[aria-label*='Insert']",
+        ]:
+            try:
+                media_btn = page.wait_for_selector(selector, state="visible", timeout=5_000)
+                if media_btn:
+                    break
+            except Exception:
+                continue
+
+        if media_btn is None:
+            raise RuntimeError(
+                "Could not find the media-attachment button in AI Studio."
+            )
+
+        with page.expect_file_chooser(timeout=10_000) as fc_info:
+            media_btn.click()
+        fc_info.value.set_files(os.path.abspath(path))
 
     # ------------------------------------------------------------------
     # Login check
@@ -256,32 +558,35 @@ class AIStudio(AIBrowserClient):
         input_el = self._find_input()
         input_el.click()
 
-        # Clear existing text: try JS first (works for contenteditable); fall
-        # back to the select-all + Delete keyboard shortcut only if JS fails.
-        try:
-            input_el.evaluate("el => { el.textContent = ''; }")
-        except Exception:
-            input_el.press(f"{_MOD}+a")
-            input_el.press("Delete")
-
-        # fill() works for <textarea>; type() works for contenteditable.
+        # For a regular <textarea>, fill() clears the existing text and sets
+        # the new value atomically.  For contenteditable, fill() is not
+        # supported, so we fall back to a select-all + type sequence.
         try:
             input_el.fill(prompt)
         except Exception:
-            input_el.type(prompt)
+            # Contenteditable fallback: clear via JS, then type character by
+            # character so that Angular's change-detection fires properly.
+            try:
+                input_el.evaluate("el => { el.textContent = ''; }")
+            except Exception:
+                input_el.press(f"{_MOD}+a")
+                input_el.press("Delete")
+            input_el.type(prompt, delay=10)
 
     def _submit_prompt(self) -> None:
         """Submit the prompt.
 
-        ``Ctrl+Enter`` (``Cmd+Enter`` on macOS) is the primary method because
-        it is a stable keyboard shortcut that works regardless of button layout
-        changes.  A Run-button click is attempted first only if the button is
-        already visible, to avoid a slow timeout on every call.
+        Tries the Run button (``ms-run-button``) first because it is the most
+        reliable target on the current UI.  Falls back to ``Ctrl+Enter``
+        (``Cmd+Enter`` on macOS) which is a stable keyboard shortcut that
+        works regardless of button-layout changes.
         """
         page = self._page
 
         # Quick, non-blocking check for a visible Run button.
         for selector in [
+            "ms-run-button button[type='submit']",
+            "ms-run-button button",
             "run-button button:not([disabled])",
             "button[aria-label='Run']",
             "button[mattooltip='Run (Ctrl+Enter)']",
@@ -294,7 +599,7 @@ class AIStudio(AIBrowserClient):
             except Exception:
                 continue
 
-        # Primary method: keyboard shortcut.
+        # Fallback: keyboard shortcut.
         page.keyboard.press(f"{_MOD}+Return")
 
     def _wait_for_response(self) -> str:
