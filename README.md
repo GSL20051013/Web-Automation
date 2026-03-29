@@ -1,7 +1,7 @@
 # Web-Automation — ai_browser
 
 A Python package that lets **local servers and personal apps** use AI without
-any API key.  It drives a real browser (Chromium via
+any API key.  It drives a real browser (Firefox via
 [Playwright](https://playwright.dev/python/)) to automate AI websites, so you
 get full model access through your regular Google account at zero cost.
 
@@ -19,7 +19,7 @@ get full model access through your regular Google account at zero cost.
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium
+playwright install firefox
 ```
 
 ---
@@ -82,11 +82,7 @@ from flask import Flask, request, jsonify
 from ai_browser import AIStudio
 
 app = Flask(__name__)
-ai = AIStudio()        # persistent client
-
-@app.before_first_request
-def startup():
-    ai.start()
+ai = AIStudio()
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -94,8 +90,11 @@ def ask():
     return jsonify({"response": ai.chat(prompt)})
 
 if __name__ == "__main__":
-    with ai:
+    ai.start()
+    try:
         app.run(port=5000)
+    finally:
+        ai.stop()
 ```
 
 ---
@@ -110,7 +109,7 @@ if __name__ == "__main__":
 
 ## How it works
 
-1. A Chromium browser is launched with a **persistent user-data directory**
+1. A Firefox browser is launched with a **persistent user-data directory**
    so that your Google login is kept between runs.
 2. The script navigates to `https://aistudio.google.com/prompts/new_chat`.
 3. It locates the prompt input area, types your text, and clicks **Run**.
