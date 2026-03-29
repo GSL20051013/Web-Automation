@@ -7,6 +7,7 @@ and personal apps can obtain AI responses without an API key.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from typing import Optional
@@ -202,6 +203,9 @@ class AIStudio(AIBrowserClient):
                 timeout=300_000,
                 wait_until="domcontentloaded",
             )
+            # Persist the session so future runs can skip login.
+            storage_state_path = os.path.join(self.profile_dir, "storage_state.json")
+            self._context.storage_state(path=storage_state_path)
             print("[ai_browser] Sign-in detected – session saved. You can use headless=True from now on.\n")
 
     # ------------------------------------------------------------------
