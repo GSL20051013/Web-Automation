@@ -29,6 +29,27 @@ Advanced usage examples
 # Enable grounding with Google Search:
         python example.py --grounding
 
+# Enable grounding with Google Maps:
+        python example.py --maps-grounding
+
+# Enable URL context (model can read URLs in the prompt):
+        python example.py --url-context
+
+# Enable code execution (model can run Python code):
+        python example.py --code-execution
+
+# Enable function calling:
+        python example.py --function-calling
+
+# Define function declarations (JSON file or inline JSON):
+        python example.py --function-declarations '[{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]'
+
+# Enable structured output:
+        python example.py --structured-output
+
+# Provide a JSON schema for structured output:
+        python example.py --output-schema '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}'
+
 # Attach a file to the prompt:
         python example.py --file /path/to/image.png --prompt "Describe this image."
 
@@ -37,6 +58,7 @@ Advanced usage examples
 """
 
 import argparse
+import json
 
 import ai_browser
 from ai_browser import AIStudio
@@ -80,6 +102,49 @@ def main() -> None:
         help="Enable Grounding with Google Search.",
     )
     parser.add_argument(
+        "--maps-grounding",
+        action="store_true",
+        help="Enable Grounding with Google Maps.",
+    )
+    parser.add_argument(
+        "--url-context",
+        action="store_true",
+        help="Enable URL Context (model can fetch and read URLs in the prompt).",
+    )
+    parser.add_argument(
+        "--code-execution",
+        action="store_true",
+        help="Enable Code Execution (model can run Python code).",
+    )
+    parser.add_argument(
+        "--function-calling",
+        action="store_true",
+        help="Enable Function Calling tool.",
+    )
+    parser.add_argument(
+        "--function-declarations",
+        metavar="JSON",
+        default="",
+        help=(
+            "JSON array of FunctionDeclaration objects. "
+            "Automatically enables function calling."
+        ),
+    )
+    parser.add_argument(
+        "--structured-output",
+        action="store_true",
+        help="Enable Structured Outputs.",
+    )
+    parser.add_argument(
+        "--output-schema",
+        metavar="JSON",
+        default="",
+        help=(
+            "JSON schema for structured output. "
+            "Automatically enables structured outputs."
+        ),
+    )
+    parser.add_argument(
         "--file",
         metavar="PATH",
         default="",
@@ -117,6 +182,53 @@ def main() -> None:
         if args.grounding:
             print("[example] Enabling Grounding with Google Search …")
             ai.set_grounding(True)
+
+        # Optional: enable grounding with Google Maps.
+        if args.maps_grounding:
+            print("[example] Enabling Grounding with Google Maps …")
+            ai.set_maps_grounding(True)
+
+        # Optional: enable URL context.
+        if args.url_context:
+            print("[example] Enabling URL Context …")
+            ai.set_url_context(True)
+
+        # Optional: enable code execution.
+        if args.code_execution:
+            print("[example] Enabling Code Execution …")
+            ai.set_code_execution(True)
+
+        # Optional: enable function calling.
+        if args.function_calling and not args.function_declarations:
+            print("[example] Enabling Function Calling …")
+            ai.set_function_calling(True)
+
+        # Optional: set function declarations (also enables function calling).
+        if args.function_declarations:
+            # Validate JSON early so parser.error() can print a clean CLI error
+            # before the browser is started, giving a better user experience.
+            try:
+                json.loads(args.function_declarations)
+            except json.JSONDecodeError as exc:
+                parser.error(f"--function-declarations is not valid JSON: {exc}")
+            print("[example] Setting function declarations …")
+            ai.set_function_declarations(args.function_declarations)
+
+        # Optional: enable structured output.
+        if args.structured_output and not args.output_schema:
+            print("[example] Enabling Structured Outputs …")
+            ai.set_structured_output(True)
+
+        # Optional: set output schema (also enables structured output).
+        if args.output_schema:
+            # Validate JSON early so parser.error() can print a clean CLI error
+            # before the browser is started, giving a better user experience.
+            try:
+                json.loads(args.output_schema)
+            except json.JSONDecodeError as exc:
+                parser.error(f"--output-schema is not valid JSON: {exc}")
+            print("[example] Setting structured output schema …")
+            ai.set_structured_output_schema(args.output_schema)
 
         # Optional: attach a file.
         if args.file:
